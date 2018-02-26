@@ -12,93 +12,193 @@
 #include "op_state.h"   // defines op_state_c (architectural state) class
 #include "tread.h"      // defines branch_record_c class
 
+#define abs(x) ((x)<0 ? -(x) : (x))
+
+
 class PREDICTOR
 {
 public:
   typedef uint32_t address_t;
 
 private:
-  typedef uint32_t history_t;
-  typedef uint8_t counter_t;
+  typedef uint64_t path_t;
+  typedef unsigned __int128 history_t;
+  typedef int8_t counter_t;
 
-  static const int BHR_LENGTH = 14;
-  static const history_t BHR_MSB = (history_t(1) << (BHR_LENGTH - 1));
-  static const std::size_t PHT_SIZE = (std::size_t(1) << BHR_LENGTH);
-  static const std::size_t PHT_INDEX_MASK = (PHT_SIZE - 1);
-  static const std::size_t BIAS_SIZE = (std::size_t(1) << 15);
-  static const std::size_t BIAS_INDEX_MASK = (BIAS_SIZE - 1);
-  static const counter_t PHT_INIT = /* weakly taken */ 2;
+  static const int NUM_TABLES = 8;
+  const int L[NUM_TABLES] = {0, 2, 4, 8, 16, 32, 64, 128};
+  const size_t PHT_SIZES[NUM_TABLES] = {11, 11, 11, 11, 11, 11, 11, 11};
+  const int COUNTER_BITS[NUM_TABLES] = {5, 5, 4, 4, 4, 4, 3, 3};
 
-  history_t bhr;                // 14 bits
-  std::vector<counter_t> pht;   // 32K bits
-  std::map<address_t, bool> bias; // 32K bits
+  // Path History
+  static const int PATH_HIST_LENGTH = 64;  // 64 bits
+  static const path_t PATH_HIST_MASK = ((unsigned __int128)(1) << PATH_HIST_LENGTH) - 1;
 
-  void update_bhr(bool taken) { bhr >>= 1; if (taken) bhr |= BHR_MSB; }
-  static std::size_t pht_index(address_t pc, history_t bhr)
-  { return (static_cast<std::size_t>(pc ^ bhr) & PHT_INDEX_MASK); }
-  static bool counter_msb(/* 2-bit counter */ counter_t cnt) { return (cnt >= 2); }
-  static counter_t counter_inc(/* 2-bit counter */ counter_t cnt)
-  { if (cnt != 3) ++cnt; return cnt; }
-  static counter_t counter_dec(/* 2-bit counter */ counter_t cnt)
-  { if (cnt != 0) --cnt; return cnt; }
+  // Global History
+  static const int GLOBAL_HIST_LENGTH = (1 << (NUM_TABLES - 1));  // 128 bits
+
+  static const counter_t PHT_INIT = /* very weakly taken */ 0;
+
+  history_t ghist;                         // 128 bits
+  path_t phist;                            // 64 bits
+  std::vector<std::vector<counter_t>> pht; // 2 x 2K x 5 bits + 4 x 2K x 4 bits + 2 x 2K x 3 bits = 64K
+  counter_t THRESH = NUM_TABLES;
+  counter_t TC = 0;
+
+  void update_ghist(bool taken) {
+    ghist <<= 1;
+    if (taken)
+      ghist |= 1;
+  }
+
+  void update_phist(path_t addr_bit) {
+    phist <<= 1;
+    phist &= PATH_HIST_MASK;
+    phist |= addr_bit;
+  }
+  static counter_t counter_inc(/* n-bit counter */ counter_t cnt, int bits) {
+    if (cnt != (1 << bits) - 1)
+      ++cnt;
+    return cnt;
+  }
+  static counter_t counter_dec(/* n-bit counter */ counter_t cnt, int bits) {
+    if (cnt != -(1 << bits))
+      --cnt;
+    return cnt;
+  }
 
 public:
-  PREDICTOR(void) : bhr(0), pht(PHT_SIZE, counter_t(PHT_INIT)), bias() { }
+  PREDICTOR(void)
+    : ghist(0)
+    , phist(0)
+    , pht(NUM_TABLES)
+  {
+    for (std::size_t it = 0; it < NUM_TABLES; ++it) {
+      pht[it] = std::vector<counter_t>(std::size_t(1) << PHT_SIZES[it], counter_t(PHT_INIT));
+    }
+  }
   // uses compiler generated copy constructor
   // uses compiler generated destructor
   // uses compiler generated assignment operator
+
+  std::vector<std::size_t> get_indices(address_t pc) {
+    std::vector<std::size_t> indices(NUM_TABLES, -1);
+    for (int i = 0; i < NUM_TABLES; ++i) {
+      std::size_t index;
+      std::size_t PHT_INDEX_MASK = (std::size_t(1) << PHT_SIZES[i]) - 1;
+      if (L[i] == 0) {
+        index = pc & PHT_INDEX_MASK;
+      } else {
+        uint64_t bitvector = 0;
+        history_t GLOBAL_HIST_MASK = (1 << L[i]) - 1;
+        history_t ghist_bits = ghist & GLOBAL_HIST_MASK;
+        std::size_t bitsfilled = 0;
+        // First add path history
+        if (L[i] < PATH_HIST_LENGTH) {
+          bitvector |= phist & GLOBAL_HIST_MASK;
+          bitsfilled += L[i];
+        } else {
+          bitvector |= phist;
+          bitsfilled += PATH_HIST_LENGTH;
+        }
+        // Then global branch history
+        ghist_bits <<= bitsfilled;
+        bitvector |= ghist_bits;
+        bitsfilled += L[i];
+        // Then PC
+        pc <<= bitsfilled;
+        bitvector |= pc;
+        uint64_t first, second, third;
+        first = bitvector & PHT_INDEX_MASK;
+        bitvector >>= PHT_SIZES[i];
+        second = bitvector & PHT_INDEX_MASK;
+        bitvector >>= PHT_SIZES[i];
+        third = bitvector & PHT_INDEX_MASK;
+        index = first ^ second ^ third;
+      }
+      indices[i] = index;
+    }
+    return indices;
+  }
 
   // get_prediction() takes a branch record (br, branch_record_c is defined in
   // tread.h) and architectural state (os, op_state_c is defined op_state.h).
   // Your predictor should use this information to figure out what prediction it
   // wants to make.  Keep in mind you're only obligated to make predictions for
   // conditional branches.
-  bool get_prediction(const branch_record_c* br, const op_state_c* os)
-  {
+  bool get_prediction(const branch_record_c* br, const op_state_c*) {
     bool prediction = false;
     if (/* conditional branch */ br->is_conditional) {
       address_t pc = br->instruction_addr;
-      std::size_t index = pht_index(pc, bhr);
-      counter_t cnt = pht[index];
-      prediction = counter_msb(cnt);
-      std::map<address_t, bool>::iterator it = bias.find(pc & BIAS_INDEX_MASK);
-      if (it != bias.end()) {
-        if (!it->second) {
-          prediction = !prediction;
-        }
-      }
+
+      counter_t sum = calc_sum(pc);
+
+      prediction = sum >= 0;
     }
     return prediction;   // true for taken, false for not taken
+  }
+
+  counter_t calc_sum(address_t pc) {
+    counter_t sum = NUM_TABLES / 2;
+
+    std::vector<std::size_t> indices = get_indices(pc);
+
+    for (int i = 0; i < NUM_TABLES; ++i) {
+      sum += pht[i][indices[i]];
+    }
+
+    return sum;
+  }
+
+  void update_counters(address_t pc, bool taken) {
+    std::vector<std::size_t> indices = get_indices(pc);
+    for (int i = 0; i < NUM_TABLES; ++i) {
+      std::size_t index = indices[i];
+      counter_t cnt = pht[i][index];
+      if (taken)
+        cnt = counter_inc(cnt, COUNTER_BITS[i]);
+      else
+        cnt = counter_dec(cnt, COUNTER_BITS[i]);
+      pht[i][index] = cnt;
+    }
   }
 
   // Update the predictor after a prediction has been made.  This should accept
   // the branch record (br) and architectural state (os), as well as a third
   // argument (taken) indicating whether or not the branch was taken.
-  void update_predictor(const branch_record_c* br, const op_state_c* os, bool taken)
-  {
+  void update_predictor(const branch_record_c* br, const op_state_c* os, bool taken) {
+
+    address_t pc =  br->instruction_addr;
     if (/* conditional branch */ br->is_conditional) {
-      address_t pc = br->instruction_addr;
-      std::size_t index = pht_index(pc, bhr);
-      counter_t cnt = pht[index];
-      std::map<address_t, bool>::iterator it = bias.find(pc & BIAS_INDEX_MASK);
-      if (it == bias.end()) {
-        bias[pc & BIAS_INDEX_MASK] = taken;
-      } else {
-        if (!it->second) {
-          if (taken)
-            cnt = counter_dec(cnt);
-          else
-            cnt = counter_inc(cnt);
-        } else {
-          if (taken)
-            cnt = counter_inc(cnt);
-          else
-            cnt = counter_dec(cnt);
+      bool pred = get_prediction(br, os);
+      counter_t sum = calc_sum(pc);
+
+      if (pred != taken || abs(sum) < THRESH) {
+        update_counters(pc, taken);
+      }
+
+      // Dynamic Thresholding
+      if (pred != taken) {
+        ++TC;
+        if (TC == 63) {
+          ++THRESH;
+          TC = 0;
         }
       }
-      pht[index] = cnt;
-      update_bhr(taken);
+      if ((pred == taken) && (abs(sum) < THRESH)) {
+        --TC;
+        if (TC == -64) {
+          --THRESH;
+          TC = 0;
+        }
+      }
+      update_ghist(taken);
+      update_phist(pc % 2);
+    } else if (br->is_call || br->is_return || br->is_indirect) {
+      update_ghist(true);
+      update_phist(pc % 2);
     }
+
   }
 };
 

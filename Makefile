@@ -15,6 +15,18 @@ op_state.o : op_state.h
 predictor.o : predictor.h op_state.h tread.h cbp_inst.h
 tread.o : tread.h cbp_inst.h op_state.h
 
+run: predictor
+	./predictor traces/without-values/DIST-INT-1
+	./predictor traces/without-values/DIST-INT-2
+	./predictor traces/without-values/DIST-INT-3
+	./predictor traces/without-values/DIST-MM-1
+	./predictor traces/without-values/DIST-MM-2
+	./predictor traces/without-values/DIST-SERV-1
+	./predictor traces/without-values/DIST-SERV-2
+	./predictor traces/without-values/DIST-SERV-3
+	./predictor traces/without-values/DIST-SERV-4
+	./predictor traces/without-values/DIST-SERV-5
+
 .PHONY : clean
 clean :
 	rm -f predictor $(objects)
