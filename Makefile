@@ -1,8 +1,10 @@
 # Author: Jared Stark;   Created: Mon Aug 16 11:28:20 PDT 2004
 # Description: Makefile for building a cbp submission.
 
+CXX = clang++
+
 CFLAGS = -g -Wall
-CXXFLAGS = -g -Wall
+CXXFLAGS = -g -Wall -std=c++11
 
 objects = cbp_inst.o main.o op_state.o predictor.o tread.o
 
