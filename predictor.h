@@ -23,7 +23,7 @@ public:
 private:
   typedef uint64_t path_t;
   typedef unsigned __int128 history_t;
-  typedef int8_t counter_t;
+  typedef int32_t counter_t;
 
   static const int NUM_TABLES = 8;
   const int L[NUM_TABLES] = {0, 2, 4, 8, 16, 32, 64, 128};
@@ -89,7 +89,7 @@ public:
       if (L[i] == 0) {
         index = pc & PHT_INDEX_MASK;
       } else {
-        uint64_t bitvector = 0;
+        history_t bitvector = 0;
         history_t GLOBAL_HIST_MASK = (1 << L[i]) - 1;
         history_t ghist_bits = ghist & GLOBAL_HIST_MASK;
         std::size_t bitsfilled = 0;
@@ -106,15 +106,13 @@ public:
         bitvector |= ghist_bits;
         bitsfilled += L[i];
         // Then PC
-        pc <<= bitsfilled;
-        bitvector |= pc;
-        uint64_t first, second, third;
-        first = bitvector & PHT_INDEX_MASK;
-        bitvector >>= PHT_SIZES[i];
-        second = bitvector & PHT_INDEX_MASK;
-        bitvector >>= PHT_SIZES[i];
-        third = bitvector & PHT_INDEX_MASK;
-        index = first ^ second ^ third;
+        bitvector |= (history_t(pc) << bitsfilled);
+
+        index = 0; // XOR Identity
+        for (int j = PHT_SIZES[i]; j < 128; j += PHT_SIZES[i]) {
+          index ^= bitvector & PHT_INDEX_MASK;
+          bitvector >>= PHT_SIZES[i];
+        }
       }
       indices[i] = index;
     }
