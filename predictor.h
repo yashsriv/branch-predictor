@@ -57,12 +57,12 @@ private:
     phist |= addr_bit;
   }
   static counter_t counter_inc(/* n-bit counter */ counter_t cnt, int bits) {
-    if (cnt != (1 << bits) - 1)
+    if (cnt != (1 << (bits - 1)) - 1)
       ++cnt;
     return cnt;
   }
   static counter_t counter_dec(/* n-bit counter */ counter_t cnt, int bits) {
-    if (cnt != -(1 << bits))
+    if (cnt != -(1 << (bits - 1)))
       --cnt;
     return cnt;
   }
