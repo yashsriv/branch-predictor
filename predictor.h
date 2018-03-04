@@ -19,10 +19,10 @@
 class loop_entry {
 public:
   uint16_t PastIter;		// 10 bits
-  uint8_t conf;		      // 4 bits
+  uint8_t conf;		      // 2 bits
   uint16_t CurIter;		  // 10 bits
 
-  uint16_t TAG;			    // 10 bits
+  uint16_t TAG;			    // 12 bits
   uint8_t age;			    // 4 bits
   bool dir;			        // 1 bit
 
@@ -43,7 +43,7 @@ public:
   typedef uint32_t address_t;
 
 private:
-  typedef uint32_t path_t;
+  typedef uint64_t path_t;
   typedef unsigned __int128 history_t;
   typedef int8_t counter_t;
 
@@ -54,7 +54,7 @@ private:
   const size_t COUNTER_BITS[NUM_TABLES] = {5, 5, 4, 4, 4, 4, 4, 4};
 
   // Path History
-  static const int PATH_HIST_LENGTH = 32;  // 32 bits
+  static const int PATH_HIST_LENGTH = 48;  // 48 bits
   static const path_t PATH_HIST_MASK = ((unsigned __int128)(1) << PATH_HIST_LENGTH) - 1;
 
   // Global History
@@ -64,8 +64,10 @@ private:
   // Loop Predictor
   static const int LOOP_PRED_SIZE  = 5;  // 32 entries
   static const int WIDTH_ITER_LOOP = 10; // we predict only loops with less than 1K iterations
-  static const int LOOP_TAG_WIDTH  = 10; // tag width in the loop predictor
-  static const int LOOP_CONFIDENCE = 15; // Max Confidence in a loop prediction
+  static const int LOOP_TAG_WIDTH  = 12; // tag width in the loop predictor
+  static const int LOOP_CONFIDENCE = 3;  // Max Confidence in a loop prediction
+  static const int MAX_AGE         = 15; // Max Age of a loop prediction
+  static const int WITHLOOP_WIDTH  = 7;  // Counter width of the WITHLOOP counter
 
   static counter_t counter_inc(/* n-bit counter */ counter_t cnt, int n) {
     if (cnt != (1 << (n - 1)) - 1)
@@ -83,7 +85,7 @@ private:
   // Global History Register
   history_t ghist;                         // 128 bits
   // Path History Register to prevent path aliasing
-  path_t phist;                            // 32 bits
+  path_t phist;                            // 48 bits
   // Various Pattern History Tables indexed by History Length
   std::vector<counter_t> pht[NUM_TABLES];  // 1 x 2K x 5 + 1 x 1K x 5 + 6 x 2K x 4 = 63K
   // Loop Predictor Table
@@ -97,7 +99,7 @@ private:
   // Counter for dynamic thresholding
   counter_t TC;                            // 7 bits
 
-  // Total = 65969 bits < 64K + 512 bits = 66048
+  // Total = 65985 bits < 64K + 512 bits = 66048
 
   // Per Branch Variables used in both getting and updating prediction
   std::size_t indices[NUM_TABLES];         // Indices to the pht
@@ -311,7 +313,7 @@ public:
           ltable[index].CurIter = 0;
           return;
 	      }	else if ((predloop != gehl_prediction) || ((MYRANDOM () & 7) == 0))
-          if (ltable[index].age < LOOP_CONFIDENCE)
+          if (ltable[index].age < MAX_AGE)
             ltable[index].age++;
       }
 
@@ -381,9 +383,9 @@ public:
       if (LVALID) {
         if (prediction != predloop) {
           if (predloop == taken) {
-            WITHLOOP = counter_inc(WITHLOOP, 7);
+            WITHLOOP = counter_inc(WITHLOOP, WITHLOOP_WIDTH);
           } else {
-            WITHLOOP = counter_dec(WITHLOOP, 7);
+            WITHLOOP = counter_dec(WITHLOOP, WITHLOOP_WIDTH);
           }
         }
       }
